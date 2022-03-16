@@ -193,8 +193,8 @@ func (b *brocker) getMessage(w http.ResponseWriter, r *http.Request) {
 
 	select {
 	case msg = <-message:
-		w.WriteHeader(http.StatusOK)
 		b.insertQueue(pg.nameQueue, nilQ)
+		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(msg))
 		return
 	case <-time.After(time.Duration(timeout) * time.Second):
