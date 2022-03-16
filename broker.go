@@ -48,7 +48,6 @@ func main() {
 	b := newBrocker()
 
 	http.HandleFunc("/", b.handler)
-
 	log.Fatal(http.ListenAndServe("localhost:"+port, nil))
 }
 
@@ -83,18 +82,30 @@ func (b *brocker) putMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	m := &sync.Mutex{}
+
 	pu, ok := p.(*parametersPUT)
 	if ok {
-		err = b.insertMessage(pu)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
+		b.insertMessage(pu, m)
 	} else {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func (b *brocker) insertMessage(p *parametersPUT, m *sync.Mutex) {
+	m.Lock()
+	q, ok := b.readQueue(p.nameQueue)
+	if !ok {
+		q := make([]string, 0)
+		q = append(q, p.message)
+		b.insertQueue(p.nameQueue, q)
+		return
+	}
+	q = append(q, p.message)
+	b.insertQueue(p.nameQueue, q)
+	m.Unlock()
 }
 
 //парсим url, чтобы вытащить имя очереди, сообщение, таймаут
@@ -155,31 +166,15 @@ func getPartURL(data string, parseQueue bool) (string, error) {
 	return spl[len(spl)-1], nil
 }
 
-func (b *brocker) insertMessage(p *parametersPUT) error {
-	q, ok := b.readQueue(p.nameQueue)
-	if !ok {
-		q := make([]string, 0)
-		q = append(q, p.message)
-		b.insertQueue(p.nameQueue, q)
-	}
-	q = append(q, p.message)
-	b.insertQueue(p.nameQueue, q)
-	return nil
-}
-
 func (b *brocker) getMessage(w http.ResponseWriter, r *http.Request) {
 	p, err := parseURL(r.URL.String(), paramForGET)
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-
 	message := make(chan string)
 
-	pg, ok := p.(*parametersGET)
-	if ok {
-		go b.pullMessage(message, pg.nameQueue)
-	}
+	pg, _ := p.(*parametersGET)
 
 	timeout, err := strconv.Atoi(pg.timeout)
 	if err != nil {
@@ -191,10 +186,15 @@ func (b *brocker) getMessage(w http.ResponseWriter, r *http.Request) {
 		timeout = defaultTimeout
 	}
 
+	var nilQ []string
+	go b.pullMessage(message, pg.nameQueue, nilQ)
+
 	var msg string
 
 	select {
 	case msg = <-message:
+		w.WriteHeader(http.StatusOK)
+		b.insertQueue(pg.nameQueue, nilQ)
 		w.Write([]byte(msg))
 		return
 	case <-time.After(time.Duration(timeout) * time.Second):
@@ -203,11 +203,11 @@ func (b *brocker) getMessage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (b *brocker) pullMessage(mC chan string, nameQ string) {
+func (b *brocker) pullMessage(mC chan string, nameQ string, nilQ []string) {
 	flag := true
 	var m string
 	for flag {
-		m = b.tryingTakeMessage(nameQ)
+		nilQ, m = b.tryingTakeMessage(nameQ)
 		if m != "" {
 			mC <- m
 			flag = false
@@ -215,10 +215,10 @@ func (b *brocker) pullMessage(mC chan string, nameQ string) {
 	}
 }
 
-func (b *brocker) tryingTakeMessage(nameQueue string) string {
+func (b *brocker) tryingTakeMessage(nameQueue string) ([]string, string) {
 	q, ok := b.readQueue(nameQueue)
 	if !ok {
-		return ""
+		return nil, ""
 	}
 
 	var message string
@@ -226,7 +226,6 @@ func (b *brocker) tryingTakeMessage(nameQueue string) string {
 	if len(q) > 0 {
 		message = q[0]
 		q = q[1:]
-		b.insertQueue(nameQueue, q)
 	}
-	return message
+	return q, message
 }
