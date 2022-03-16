@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -21,7 +20,7 @@ const (
 
 type brocker struct {
 	queues      map[string][]string
-	queuesMutex *sync.RWMutex
+	queuesMutex *sync.Mutex
 }
 
 type parametersPUT struct {
@@ -36,19 +35,15 @@ type parametersGET struct {
 
 func newBrocker() *brocker {
 	q := make(map[string][]string)
-	qM := &sync.RWMutex{}
+	qM := &sync.Mutex{}
 	return &brocker{queues: q, queuesMutex: qM}
 }
 
 func main() {
-	fmt.Print("введите порт:")
-	var port string
-	fmt.Scan(&port)
-
 	b := newBrocker()
 
 	http.HandleFunc("/", b.handler)
-	log.Fatal(http.ListenAndServe("localhost:"+port, nil))
+	log.Fatal(http.ListenAndServe("localhost:8181", nil))
 }
 
 func (b *brocker) handler(w http.ResponseWriter, r *http.Request) {
@@ -65,13 +60,11 @@ func (b *brocker) handler(w http.ResponseWriter, r *http.Request) {
 func (b *brocker) insertQueue(nameQueue string, updateQ []string) {
 	b.queuesMutex.Lock()
 	b.queues[nameQueue] = updateQ
-	b.queuesMutex.Unlock()
+	defer b.queuesMutex.Unlock()
 }
 
 func (b *brocker) readQueue(nameQueue string) ([]string, bool) {
-	b.queuesMutex.RLock()
 	q, ok := b.queues[nameQueue]
-	b.queuesMutex.RUnlock()
 	return q, ok
 }
 
@@ -82,30 +75,29 @@ func (b *brocker) putMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	m := &sync.Mutex{}
-
 	pu, ok := p.(*parametersPUT)
 	if ok {
-		b.insertMessage(pu, m)
+		b.insertMessage(pu)
 	} else {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
+
 	w.WriteHeader(http.StatusOK)
 }
 
-func (b *brocker) insertMessage(p *parametersPUT, m *sync.Mutex) {
-	m.Lock()
-	q, ok := b.readQueue(p.nameQueue)
+func (b *brocker) insertMessage(p *parametersPUT) {
+	b.queuesMutex.Lock()
+	defer b.queuesMutex.Unlock()
+	q, ok := b.queues[p.nameQueue]
 	if !ok {
 		q := make([]string, 0)
 		q = append(q, p.message)
-		b.insertQueue(p.nameQueue, q)
+		b.queues[p.nameQueue] = q
 		return
 	}
 	q = append(q, p.message)
-	b.insertQueue(p.nameQueue, q)
-	m.Unlock()
+	b.queues[p.nameQueue] = q
 }
 
 //парсим url, чтобы вытащить имя очереди, сообщение, таймаут
@@ -186,14 +178,16 @@ func (b *brocker) getMessage(w http.ResponseWriter, r *http.Request) {
 		timeout = defaultTimeout
 	}
 
-	var nilQ []string
-	go b.pullMessage(message, pg.nameQueue, nilQ)
+	var q []string
+	go func() {
+		q = b.pullMessage(message, pg.nameQueue)
+	}()
 
 	var msg string
 
 	select {
 	case msg = <-message:
-		b.insertQueue(pg.nameQueue, nilQ)
+		b.insertQueue(pg.nameQueue, q)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(msg))
 		return
@@ -203,20 +197,24 @@ func (b *brocker) getMessage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (b *brocker) pullMessage(mC chan string, nameQ string, nilQ []string) {
+func (b *brocker) pullMessage(mC chan string, nameQ string) []string {
 	flag := true
 	var m string
+	var q []string
 	for flag {
-		nilQ, m = b.tryingTakeMessage(nameQ)
+		q, m = b.tryingTakeMessage(nameQ)
 		if m != "" {
 			mC <- m
 			flag = false
 		}
 	}
+	return q
 }
 
 func (b *brocker) tryingTakeMessage(nameQueue string) ([]string, string) {
-	q, ok := b.readQueue(nameQueue)
+	b.queuesMutex.Lock()
+	defer b.queuesMutex.Unlock()
+	q, ok := b.queues[nameQueue]
 	if !ok {
 		return nil, ""
 	}
