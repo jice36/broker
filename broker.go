@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -10,6 +11,16 @@ import (
 	"sync"
 	"time"
 )
+
+/*
+
+ab -n 10000 -c 100 -m PUT http://127.0.0.1:8181/a?v=11
+
+
+ab -l -n 10000 -c 100 -m  GET http://127.0.0.1:8181/a
+
+
+*/
 
 const (
 	paramForPUT = "PUT"
@@ -40,10 +51,13 @@ func newBrocker() *brocker {
 }
 
 func main() {
+	fmt.Print("введите порт:")
+	var port string
+	fmt.Scan(&port)
 	b := newBrocker()
 
 	http.HandleFunc("/", b.handler)
-	log.Fatal(http.ListenAndServe("localhost:8181", nil))
+	log.Fatal(http.ListenAndServe("localhost:"+port, nil))
 }
 
 func (b *brocker) handler(w http.ResponseWriter, r *http.Request) {
@@ -98,6 +112,7 @@ func (b *brocker) insertMessage(p *parametersPUT) {
 	}
 	q = append(q, p.message)
 	b.queues[p.nameQueue] = q
+	return
 }
 
 //парсим url, чтобы вытащить имя очереди, сообщение, таймаут
