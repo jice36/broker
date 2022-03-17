@@ -14,10 +14,15 @@ import (
 
 /*
 
+
+curl -D - -XPUT localhost:8181/a?v=1
+
+curl -D - -XGET http://127.0.0.1:8181/a?timeout=1
+
 ab -n 10000 -c 100 -m PUT http://127.0.0.1:8181/a?v=11
 
 
-ab -l -n 10000 -c 100 -m  GET http://127.0.0.1:8181/a
+ab -n 10000 -c 100 -m  GET http://127.0.0.1:8181/a
 
 
 */
@@ -31,7 +36,7 @@ const (
 
 type brocker struct {
 	queues      map[string][]string
-	queuesMutex *sync.Mutex
+	queuesMutex *sync.RWMutex
 }
 
 type parametersPUT struct {
@@ -46,13 +51,14 @@ type parametersGET struct {
 
 func newBrocker() *brocker {
 	q := make(map[string][]string)
-	qM := &sync.Mutex{}
+	qM := &sync.RWMutex{}
 	return &brocker{queues: q, queuesMutex: qM}
 }
 
 func main() {
-	fmt.Print("введите порт:")
 	var port string
+
+	fmt.Print("Введите порт:")
 	fmt.Scan(&port)
 	b := newBrocker()
 
@@ -69,17 +75,6 @@ func (b *brocker) handler(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
-}
-
-func (b *brocker) insertQueue(nameQueue string, updateQ []string) {
-	b.queuesMutex.Lock()
-	b.queues[nameQueue] = updateQ
-	defer b.queuesMutex.Unlock()
-}
-
-func (b *brocker) readQueue(nameQueue string) ([]string, bool) {
-	q, ok := b.queues[nameQueue]
-	return q, ok
 }
 
 func (b *brocker) putMessage(w http.ResponseWriter, r *http.Request) {
@@ -193,16 +188,14 @@ func (b *brocker) getMessage(w http.ResponseWriter, r *http.Request) {
 		timeout = defaultTimeout
 	}
 
-	var q []string
 	go func() {
-		q = b.pullMessage(message, pg.nameQueue)
+		b.pullMessage(message, pg.nameQueue)
 	}()
 
 	var msg string
 
 	select {
 	case msg = <-message:
-		b.insertQueue(pg.nameQueue, q)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(msg))
 		return
@@ -212,33 +205,22 @@ func (b *brocker) getMessage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (b *brocker) pullMessage(mC chan string, nameQ string) []string {
+func (b *brocker) pullMessage(mC chan string, nameQ string) {
 	flag := true
-	var m string
-	var q []string
 	for flag {
-		q, m = b.tryingTakeMessage(nameQ)
-		if m != "" {
-			mC <- m
-			flag = false
+		b.queuesMutex.RLock()
+		q, ok := b.queues[nameQ]
+		b.queuesMutex.RUnlock()
+		if ok {
+			if len(q) > 0 {
+				message := q[0]
+				mC <- message
+				b.queuesMutex.Lock()
+				q = q[1:]
+				b.queues[nameQ] = q
+				b.queuesMutex.Unlock()
+				flag = false
+			}
 		}
 	}
-	return q
-}
-
-func (b *brocker) tryingTakeMessage(nameQueue string) ([]string, string) {
-	b.queuesMutex.Lock()
-	defer b.queuesMutex.Unlock()
-	q, ok := b.queues[nameQueue]
-	if !ok {
-		return nil, ""
-	}
-
-	var message string
-
-	if len(q) > 0 {
-		message = q[0]
-		q = q[1:]
-	}
-	return q, message
 }
