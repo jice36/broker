@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -56,14 +55,15 @@ func newBrocker() *brocker {
 }
 
 func main() {
-	var port string
+	//var port string
 
-	fmt.Print("Введите порт:")
-	fmt.Scan(&port)
+	// fmt.Print("Введите порт:")
+	// fmt.Scan(&port)
 	b := newBrocker()
 
 	http.HandleFunc("/", b.handler)
-	log.Fatal(http.ListenAndServe("localhost:"+port, nil))
+	//log.Fatal(http.ListenAndServe("localhost:"+port, nil))
+	log.Fatal(http.ListenAndServe("localhost:8181", nil))
 }
 
 func (b *brocker) handler(w http.ResponseWriter, r *http.Request) {
@@ -98,6 +98,7 @@ func (b *brocker) putMessage(w http.ResponseWriter, r *http.Request) {
 func (b *brocker) insertMessage(p *parametersPUT) {
 	b.queuesMutex.Lock()
 	defer b.queuesMutex.Unlock()
+
 	q, ok := b.queues[p.nameQueue]
 	if !ok {
 		q := make([]string, 0)
@@ -174,7 +175,6 @@ func (b *brocker) getMessage(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	message := make(chan string)
 
 	pg, _ := p.(*parametersGET)
 
@@ -188,16 +188,21 @@ func (b *brocker) getMessage(w http.ResponseWriter, r *http.Request) {
 		timeout = defaultTimeout
 	}
 
+	var q []string
+	qC := make(chan []string)
 	go func() {
-		b.pullMessage(message, pg.nameQueue)
+		b.pullMessage(qC, pg.nameQueue)
 	}()
 
-	var msg string
-
 	select {
-	case msg = <-message:
+	case q = <-qC:
+		b.queuesMutex.Lock()
+		message := q[0]
+		q = q[1:]
+		b.queues[pg.nameQueue] = q
+		b.queuesMutex.Unlock()
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(msg))
+		w.Write([]byte(message))
 		return
 	case <-time.After(time.Duration(timeout) * time.Second):
 		w.WriteHeader(http.StatusNotFound)
@@ -205,21 +210,15 @@ func (b *brocker) getMessage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (b *brocker) pullMessage(mC chan string, nameQ string) {
-	flag := true
-	for flag {
+func (b *brocker) pullMessage(qC chan []string, nameQ string) {
+	for {
 		b.queuesMutex.RLock()
 		q, ok := b.queues[nameQ]
 		b.queuesMutex.RUnlock()
 		if ok {
 			if len(q) > 0 {
-				message := q[0]
-				mC <- message
-				b.queuesMutex.Lock()
-				q = q[1:]
-				b.queues[nameQ] = q
-				b.queuesMutex.Unlock()
-				flag = false
+				qC <- q
+				return
 			}
 		}
 	}
