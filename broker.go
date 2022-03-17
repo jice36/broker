@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -55,15 +56,14 @@ func newBrocker() *brocker {
 }
 
 func main() {
-	//var port string
+	var port string
 
-	// fmt.Print("Введите порт:")
-	// fmt.Scan(&port)
+	fmt.Print("Введите порт:")
+	fmt.Scan(&port)
 	b := newBrocker()
 
 	http.HandleFunc("/", b.handler)
-	//log.Fatal(http.ListenAndServe("localhost:"+port, nil))
-	log.Fatal(http.ListenAndServe("localhost:8181", nil))
+	log.Fatal(http.ListenAndServe("localhost:"+port, nil))
 }
 
 func (b *brocker) handler(w http.ResponseWriter, r *http.Request) {
