@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -36,7 +35,7 @@ const (
 
 type broker struct {
 	queues      map[string][]string
-	queuesMutex *sync.RWMutex
+	queuesMutex sync.Mutex
 }
 
 type parametersPUT struct {
@@ -51,19 +50,19 @@ type parametersGET struct {
 
 func newBrocker() *broker {
 	q := make(map[string][]string)
-	qM := &sync.RWMutex{}
+	qM := sync.Mutex{}
 	return &broker{queues: q, queuesMutex: qM}
 }
 
 func main() {
-	var port string
-
-	fmt.Print("Введите порт:")
-	fmt.Scan(&port)
+	//var port string
+	//
+	//fmt.Print("Введите порт:")
+	//fmt.Scan(&port)
 	b := newBrocker()
 
 	http.HandleFunc("/", b.handler)
-	log.Fatal(http.ListenAndServe("localhost:"+port, nil))
+	log.Fatal(http.ListenAndServe("localhost:8181", nil))
 }
 
 func (b *broker) handler(w http.ResponseWriter, r *http.Request) {
@@ -188,19 +187,13 @@ func (b *broker) getMessage(w http.ResponseWriter, r *http.Request) {
 		timeout = defaultTimeout
 	}
 
-	var q []string
-	qC := make(chan []string)
+	mC := make(chan string)
 	go func() {
-		b.pullMessage(qC, pg.nameQueue)
+		b.pullMessage(mC, pg.nameQueue)
 	}()
 
 	select {
-	case q = <-qC:
-		b.queuesMutex.Lock()
-		message := q[0]
-		q = q[1:]
-		b.queues[pg.nameQueue] = q
-		b.queuesMutex.Unlock()
+	case message := <-mC:
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(message))
 		return
@@ -210,16 +203,20 @@ func (b *broker) getMessage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (b *broker) pullMessage(qC chan []string, nameQ string) {
+func (b *broker) pullMessage(m chan string, nameQ string) {
 	for {
-		b.queuesMutex.RLock()
+		b.queuesMutex.Lock()
 		q, ok := b.queues[nameQ]
-		b.queuesMutex.RUnlock()
 		if ok {
 			if len(q) > 0 {
-				qC <- q
+				message := q[0]
+				m <- message
+				q = q[1:]
+				b.queues[nameQ] = q
+				b.queuesMutex.Unlock()
 				return
 			}
 		}
+		b.queuesMutex.Unlock()
 	}
 }
