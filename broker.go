@@ -34,7 +34,7 @@ const (
 	defaultTimeout = 5 // таймаут по умолчанию, если не передан другой
 )
 
-type brocker struct {
+type broker struct {
 	queues      map[string][]string
 	queuesMutex *sync.RWMutex
 }
@@ -49,10 +49,10 @@ type parametersGET struct {
 	timeout   string
 }
 
-func newBrocker() *brocker {
+func newBrocker() *broker {
 	q := make(map[string][]string)
 	qM := &sync.RWMutex{}
-	return &brocker{queues: q, queuesMutex: qM}
+	return &broker{queues: q, queuesMutex: qM}
 }
 
 func main() {
@@ -66,7 +66,7 @@ func main() {
 	log.Fatal(http.ListenAndServe("localhost:"+port, nil))
 }
 
-func (b *brocker) handler(w http.ResponseWriter, r *http.Request) {
+func (b *broker) handler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPut:
 		b.putMessage(w, r)
@@ -77,7 +77,7 @@ func (b *brocker) handler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (b *brocker) putMessage(w http.ResponseWriter, r *http.Request) {
+func (b *broker) putMessage(w http.ResponseWriter, r *http.Request) {
 	p, err := parseURL(r.URL.String(), paramForPUT)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -95,7 +95,7 @@ func (b *brocker) putMessage(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (b *brocker) insertMessage(p *parametersPUT) {
+func (b *broker) insertMessage(p *parametersPUT) {
 	b.queuesMutex.Lock()
 	defer b.queuesMutex.Unlock()
 
@@ -169,7 +169,7 @@ func getPartURL(data string, parseQueue bool) (string, error) {
 	return spl[len(spl)-1], nil
 }
 
-func (b *brocker) getMessage(w http.ResponseWriter, r *http.Request) {
+func (b *broker) getMessage(w http.ResponseWriter, r *http.Request) {
 	p, err := parseURL(r.URL.String(), paramForGET)
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
@@ -210,7 +210,7 @@ func (b *brocker) getMessage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (b *brocker) pullMessage(qC chan []string, nameQ string) {
+func (b *broker) pullMessage(qC chan []string, nameQ string) {
 	for {
 		b.queuesMutex.RLock()
 		q, ok := b.queues[nameQ]
