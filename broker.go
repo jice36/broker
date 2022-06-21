@@ -34,8 +34,13 @@ const (
 )
 
 type broker struct {
-	queues      map[string][]string
+	queues      map[string]channels
 	queuesMutex sync.Mutex
+}
+
+type channels struct{
+	in chan <- string
+	out <- chan string
 }
 
 type parametersPUT struct {
@@ -49,7 +54,7 @@ type parametersGET struct {
 }
 
 func newBrocker() *broker {
-	q := make(map[string][]string)
+	q := make(map[string]channels)
 	qM := sync.Mutex{}
 	return &broker{queues: q, queuesMutex: qM}
 }
@@ -98,15 +103,18 @@ func (b *broker) insertMessage(p *parametersPUT) {
 	b.queuesMutex.Lock()
 	defer b.queuesMutex.Unlock()
 
-	q, ok := b.queues[p.nameQueue]
+	channel, ok := b.queues[p.nameQueue]
 	if !ok {
-		q := make([]string, 0)
-		q = append(q, p.message)
-		b.queues[p.nameQueue] = q
+		in, out := dynamicChannel(5)
+		channel = channels{
+			in:  in,
+			out: out,
+		}
+		in <- p.message
+		b.queues[p.nameQueue] = channel
 		return
 	}
-	q = append(q, p.message)
-	b.queues[p.nameQueue] = q
+	channel.in <- p.message
 	return
 }
 
@@ -146,7 +154,7 @@ func parseURL(u string, paramMethod string) (interface{}, error) {
 		pg := &parametersGET{nameQueue: name, timeout: time}
 		return pg, nil
 	}
-	return nil, errors.New("bad parametr")
+	return nil, errors.New("bad parameter")
 }
 
 func getPartURL(data string, parseQueue bool) (string, error) {
@@ -154,7 +162,7 @@ func getPartURL(data string, parseQueue bool) (string, error) {
 	if parseQueue {
 		spl = strings.Split(data, "/")
 		if len(spl) == 0 && len(spl) > 2 {
-			return "", errors.New("bad parametr")
+			return "", errors.New("bad parameter")
 		}
 	} else {
 		if data == "" {
@@ -162,7 +170,7 @@ func getPartURL(data string, parseQueue bool) (string, error) {
 		}
 		spl = strings.Split(data, "=")
 		if len(spl) > 3 || spl[len(spl)-1] == "" {
-			return "", errors.New("bad parametr")
+			return "", errors.New("bad parameter")
 		}
 	}
 	return spl[len(spl)-1], nil
@@ -187,13 +195,14 @@ func (b *broker) getMessage(w http.ResponseWriter, r *http.Request) {
 		timeout = defaultTimeout
 	}
 
-	mC := make(chan string)
-	go func() {
-		b.pullMessage(mC, pg.nameQueue)
-	}()
+	channel , ok := b.queues[pg.nameQueue]
+	if !ok{
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
 
 	select {
-	case message := <-mC:
+	case message := <-channel.out:
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(message))
 		return
@@ -203,20 +212,42 @@ func (b *broker) getMessage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (b *broker) pullMessage(m chan string, nameQ string) {
-	for {
-		b.queuesMutex.Lock()
-		q, ok := b.queues[nameQ]
-		if ok {
-			if len(q) > 0 {
-				message := q[0]
-				m <- message
-				q = q[1:]
-				b.queues[nameQ] = q
-				b.queuesMutex.Unlock()
-				return
+func dynamicChannel(initial int) (chan <- string, <- chan string) {
+	in := make(chan string, initial)
+	out := make(chan string, initial)
+	go func () {
+		defer close(out)
+		buffer := make([]string, 0, initial)
+	loop:
+		for {
+			packet, ok := <- in
+			if !ok {
+				break loop
+			}
+			select {
+			case out <- packet:
+				continue
+			default:
+			}
+			buffer = append(buffer, packet)
+			for len(buffer) > 0 {
+				select {
+				case packet, ok := <-in:
+					if !ok {
+						break loop
+					}
+					buffer = append(buffer, packet)
+
+				case out <- buffer[0]:
+					buffer = buffer[1:]
+				}
 			}
 		}
-		b.queuesMutex.Unlock()
-	}
+		for len(buffer) > 0 {
+			out <- buffer[0]
+			buffer = buffer[1:]
+		}
+	} ()
+
+	return in, out
 }
